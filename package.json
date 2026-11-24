@@ -1,0 +1,68 @@
+{
+  "name": "dsh-sql-tuner",
+  "version": "1.0.0",
+  "description": "SQL analysis and tuning panel for DeepSeek Harness. Explains a query against your own schema, ranks optimization advice, and prints index DDL, SQL rewrites and an execution plan checklist.",
+  "type": "module",
+  "license": "MIT",
+  "author": "jrc521",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jrc521/dsh-sql-tuner.git"
+  },
+  "homepage": "https://github.com/jrc521/dsh-sql-tuner#readme",
+  "bugs": {
+    "url": "https://github.com/jrc521/dsh-sql-tuner/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "sql",
+    "sql-tuning",
+    "query-optimization",
+    "explain-plan",
+    "database",
+    "mysql",
+    "postgresql"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "engine.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "assets/*.png",
+    "LICENSE",
+    "README.md",
+    "icon.svg"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0 <0.3.0"
+  },
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "make-icon": "node scripts/make-icon.mjs",
+    "test": "node test/engine.test.mjs && node test/client.smoke.mjs && node scripts/check-dict.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}

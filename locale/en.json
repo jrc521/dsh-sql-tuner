@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "SQL tuner",
+    "description": "Explains, reviews and tunes SQL against a schema you paste in. Open it from the SQL tuner icon in the left sidebar: paste CREATE TABLE / CREATE INDEX (or a plain data dictionary) on the left, put the query in the editor on the right, and results refresh as you type. Output has three tabs: Explanation (statement structure, logical execution order, predicate indexability, estimated access per table), Advice (rule findings ranked by severity with cause and fix), and Execution (index DDL for 14 dialects, SQL rewrites, plan checklist, optimizer settings). SQL can be typed, pasted, or imported from a .sql/.txt file (also by drag and drop). Everything runs locally in the browser: no database connection is opened, no SQL or schema leaves the page, and no model request is made. Row counts and scan estimates are heuristics from the schema you provide, not real EXPLAIN output — always confirm the final plan in the database. Copy report or Send to agent puts the structured findings into the chat for a deeper model review."
+  }
+}
