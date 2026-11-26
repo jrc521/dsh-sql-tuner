@@ -42,6 +42,11 @@ const CLAUSE_WORDS = new Set([
 
 const JOIN_WORDS = new Set(['join', 'inner', 'left', 'right', 'full', 'cross', 'outer', 'straight_join'])
 
+/** 一条 JOIN 子句可能从这些词开始，用来界定上一条 ON 的结束。 */
+const JOIN_PHRASE_WORDS = new Set([
+  'join', 'left', 'right', 'full', 'cross', 'inner', 'outer', 'straight_join', 'apply', 'lateral',
+])
+
 const AGG_FUNCS = new Set([
   'count', 'sum', 'avg', 'min', 'max', 'group_concat', 'string_agg', 'listagg', 'array_agg',
   'stddev', 'variance', 'var_pop', 'var_samp', 'stddev_pop', 'stddev_samp', 'median',
@@ -716,8 +721,15 @@ function parseIndexSpec(spec, source) {
 function tokenText(tokens, from, to) {
   const noSpaceBefore = new Set(['.', ',', ')', ']', ';'])
   const noSpaceAfter = new Set(['.', '('])
+  // 这些关键字后面的 '(' 要留空格（IN (…)、EXISTS (…)），函数名后面不留（count(*)）
+  const spaceBeforeParen = new Set([
+    'in', 'exists', 'not', 'and', 'or', 'on', 'using', 'where', 'values', 'between',
+    'select', 'from', 'union', 'all', 'any', 'some',
+  ])
   let out = ''
   let previous = ''
+  let previousWord = ''
+  let previousIsWord = false
   for (let i = from; i < to && i < tokens.length; i += 1) {
     const token = tokens[i]
     if (token.t === 'comment') continue
@@ -726,10 +738,13 @@ function tokenText(tokens, from, to) {
       out = piece
     } else {
       const firstChar = piece[0] || ''
-      if (noSpaceBefore.has(firstChar) || noSpaceAfter.has(previous)) out += piece
+      const isCall = firstChar === '(' && previousIsWord && !spaceBeforeParen.has(previousWord)
+      if (noSpaceBefore.has(firstChar) || noSpaceAfter.has(previous) || isCall) out += piece
       else out += ' ' + piece
     }
     previous = piece[piece.length - 1] || ''
+    previousWord = token.t === 'id' ? lower(token) : ''
+    previousIsWord = token.t === 'id' && piece === token.v
   }
   return out.trim()
 }
@@ -769,21 +784,42 @@ function refKey(ref) {
 
 function splitConjuncts(tokens, from, to, depths) {
   const segments = []
+  const base = depths[from] || 0
   let start = from
   let connector = null
   for (let i = from; i < to; i += 1) {
     const token = tokens[i]
-    if (depths[i] !== 0) continue
+    if ((depths[i] || 0) !== base) continue
     if (isWord(token, 'and') || isWord(token, 'or')) {
       const next = tokens.slice(i + 1, i + 2)[0]
       if (isWord(next, 'and') || isWord(next, 'or')) continue
-      segments.push({ start, end: i, connector })
+      if (i > start) segments.push({ start, end: i, connector })
       connector = lower(token)
       start = i + 1
     }
   }
   if (start < to) segments.push({ start, end: to, connector })
   return segments.filter((segment) => segment.end > segment.start)
+}
+
+/**
+ * 把 `(A OR B)` 这种整段被括号包住的复合条件拆成独立条件，
+ * 否则 `x LIKE '%a%' OR y = 1` 会被当成「一个比较」，右半边被误读成列参与连接判断。
+ */
+function expandSegments(tokens, depths, from, to) {
+  const out = []
+  for (const segment of splitConjuncts(tokens, from, to, depths)) {
+    const stripped = stripOuterParens(tokens, segment.start, segment.end)
+    const inner = splitConjuncts(tokens, stripped.start, stripped.end, depths)
+    if (inner.length > 1) {
+      for (const child of inner) {
+        out.push({ start: child.start, end: child.end, connector: child.connector || segment.connector })
+      }
+      continue
+    }
+    out.push(segment)
+  }
+  return out
 }
 
 function stripOuterParens(tokens, from, to) {
@@ -879,6 +915,16 @@ function lineOfToken(statement, token) {
   return line
 }
 
+function containsTopLevelOr(tokens, depths, from, to) {
+  const base = depths[from] || 0
+  for (let i = from; i < to; i += 1) {
+    if (!isWord(tokens[i], 'or')) continue
+    // 只看本层与紧邻的一层括号：子查询里（深度差 ≥2）的 OR 不算跨列 OR
+    if ((depths[i] || 0) - base <= 1) return true
+  }
+  return false
+}
+
 function analyzePredicateSegment(statement, tokens, depths, segment, aliasMap) {
   const stripped = stripOuterParens(tokens, segment.start, segment.end)
   const operator = findOperator(tokens, stripped.start, stripped.end)
@@ -893,6 +939,7 @@ function analyzePredicateSegment(statement, tokens, depths, segment, aliasMap) {
       sargable: false,
       funcOnColumn: side.func,
       connector: segment.connector,
+      hasOr: containsTopLevelOr(tokens, depths, stripped.start, stripped.end),
       line: lineOfToken(statement, tokens[stripped.start]),
       raw: side.raw,
     }
@@ -931,6 +978,7 @@ function analyzePredicateSegment(statement, tokens, depths, segment, aliasMap) {
     sargable,
     funcOnColumn: left.func || right.func || '',
     connector: segment.connector,
+    hasOr: containsTopLevelOr(tokens, depths, stripped.start, stripped.end),
     line: lineOfToken(statement, tokens[stripped.start]),
     raw: tokenText(tokens, stripped.start, stripped.end),
     pattern: operator.op === 'like' || operator.op === 'not like' || operator.op === 'ilike' ? (right.literal === 'string' ? extractStringLiteral(tokens, right.start, right.end) : '') : '',
@@ -1304,8 +1352,18 @@ function parseStatement(statement, options) {
       result.joins.push({ kind: joinKind, table: attached, at: index })
     }
     if (onAt > index) {
-      const onEnd = clauseStops.filter((stop) => stop > onAt).sort((a, b) => a - b)[0] ?? end
-      for (const segment of splitConjuncts(tokens, onAt + 1, onEnd, depths)) {
+      // ON 的范围要停在下一条 JOIN 的关键字（含 LEFT/RIGHT 等修饰词）之前，
+      // 否则第二个 JOIN 的 ON 会被卷进第一条 ON 的条件里
+      const onLimit = clauseStops.filter((stop) => stop > onAt).sort((a, b) => a - b)[0] ?? end
+      let onEnd = onLimit
+      for (let i = onAt + 1; i < onLimit; i += 1) {
+        if ((depths[i] || 0) !== 0) continue
+        if (tokens[i].t === 'id' && !tokens[i].quoted && JOIN_PHRASE_WORDS.has(lower(tokens[i]))) {
+          onEnd = i
+          break
+        }
+      }
+      for (const segment of expandSegments(tokens, depths, onAt + 1, onEnd)) {
         result.predicates.push(analyzePredicateSegment(result, tokens, depths, segment, aliasMap))
       }
     }
@@ -1315,7 +1373,7 @@ function parseStatement(statement, options) {
   for (const [startAt, target] of [[whereAt, 'where'], [havingAt, 'having'], [qualifyAt, 'qualify']]) {
     if (startAt < 0) continue
     const end = clauseStops.filter((index) => index > startAt).sort((a, b) => a - b)[0] ?? tokens.length
-    for (const segment of splitConjuncts(tokens, startAt + 1, end, depths)) {
+    for (const segment of expandSegments(tokens, depths, startAt + 1, end)) {
       const predicate = analyzePredicateSegment(result, tokens, depths, segment, aliasMap)
       predicate.clause = target
       if (target === 'having') result.having.push(predicate)
@@ -1434,7 +1492,10 @@ function columnSetFor(statement, tableMeta, alias, includeJoin) {
       }
       if (!predicate.sargable) continue
       if (['=', 'in', 'is'].includes(predicate.op)) equality.add(column)
-      else if (['>', '<', '>=', '<=', 'between', 'like'].includes(predicate.op)) range.add(column)
+      else if (predicate.op === 'like' || predicate.op === 'not like') {
+        // 前导通配符（%x / _x）走不了索引，不能拿它去拼索引建议
+        if (predicate.pattern && !/^[%_]/.test(predicate.pattern)) range.add(column)
+      } else if (['>', '<', '>=', '<=', 'between'].includes(predicate.op)) range.add(column)
     }
   }
   return { equality, joinEquality, range, all }
@@ -1732,6 +1793,37 @@ function analyzeStatement(statement, options) {
   const { dialect } = options
   const tables = statement.tables.map((entry) => entry.resolved).filter(Boolean)
 
+  // 笛卡尔积：多表之间没有任何连接条件（`FROM a, b` 这种逗号连接同样算）
+  const cartesianTables = new Set()
+  if (statement.tables.length > 1) {
+    const cartesianMap = aliasMapFor(statement)
+    const connectedTables = new Set()
+    for (const predicate of statement.predicates) {
+      if (predicate.kind !== 'join') continue
+      for (const ref of predicate.columns) {
+        const resolved = resolveQualifier(ref, cartesianMap)
+        if (resolved) connectedTables.add(resolved.name)
+      }
+    }
+    for (let i = 1; i < statement.tables.length; i += 1) {
+      const entry = statement.tables[i]
+      if (!connectedTables.has(entry.name)) cartesianTables.add(entry.name)
+    }
+    if (cartesianTables.size > 0) {
+      pushFinding(findings, {
+        code: 'cartesian',
+        severity: 'high',
+        line: statement.startLine,
+        params: {
+          tables: [...cartesianTables].map((name) => {
+            const entry = statement.tables.find((item) => item.name === name)
+            return entry ? entry.rawName : name
+          }),
+        },
+      })
+    }
+  }
+
   for (const entry of statement.tables) {
     const tableMeta = entry.resolved
     if (!tableMeta) {
@@ -1759,7 +1851,16 @@ function analyzeStatement(statement, options) {
     const rows = tableMeta.rows
     const bigTable = rows !== null && rows > BIG_TABLE
     const wanted = [...allEquality, ...range]
-    const suggestion = wanted.length > 0 ? buildIndexSuggestion(tableMeta, allEquality, range, orderColumns) : null
+    // 索引列顺序：驱动表的连接键来自别的表、用不上，只放过滤条件；
+    // 被驱动表（内层）则以连接键打头，再拼过滤条件——嵌套循环才走得到索引。
+    const drivingAlias = statement.tables[0] ? statement.tables[0].alias : ''
+    const isDriving = entry.alias === drivingAlias
+    const suggestionEquality = isDriving
+      ? (equality.size > 0 ? equality : joinEquality)
+      : new Set([...joinEquality, ...equality])
+    const suggestion = wanted.length > 0
+      ? buildIndexSuggestion(tableMeta, suggestionEquality, range, orderColumns)
+      : null
 
     if (!best) {
       if (suggestion) {
@@ -1772,7 +1873,7 @@ function analyzeStatement(statement, options) {
           columns: wanted,
           params: { table: tableMeta.name, columns: wanted, rows: formatRows(rows) },
         })
-      } else if (bigTable && statement.kind === 'SELECT') {
+      } else if (bigTable && statement.kind === 'SELECT' && !cartesianTables.has(tableMeta.name)) {
         pushFinding(findings, {
           code: 'fullScan',
           severity: 'warn',
@@ -1906,7 +2007,7 @@ function analyzeStatement(statement, options) {
     }
 
     // 大表全量扫描的具体原因
-    if (bigTable && !best && all.size === 0 && statement.kind === 'SELECT') {
+    if (bigTable && !best && all.size === 0 && statement.kind === 'SELECT' && !cartesianTables.has(tableMeta.name)) {
       pushFinding(findings, {
         code: 'unfilteredBigTable',
         severity: 'high',
@@ -1941,7 +2042,7 @@ function analyzeStatement(statement, options) {
     if (predicate.op === 'not in') {
       pushFinding(findings, { code: 'notIn', severity: 'warn', line: predicate.line, params: { raw: predicate.raw } })
     }
-    if (predicate.connector === 'or' || (predicate.op === '' && /or/i.test(predicate.raw))) {
+    if (predicate.connector === 'or' || predicate.hasOr) {
       pushFinding(findings, { code: 'orPredicate', severity: 'info', line: predicate.line, params: { raw: predicate.raw } })
     }
     // 隐式类型转换
@@ -2010,26 +2111,8 @@ function analyzeStatement(statement, options) {
       pushFinding(findings, { code: 'havingToWhere', severity: 'info', line: movable[0].line, params: {} })
     }
   }
+  // 外连接被 WHERE 条件退化成内连接（笛卡尔积已在上面单独判过，这里只看左连接）
   if (statement.joins.length > 0) {
-    const joinedAliases = new Set(statement.joins.map((join) => join.table))
-    const connected = new Set()
-    for (const predicate of statement.predicates) {
-      if (predicate.kind !== 'join') continue
-      for (const ref of predicate.columns) {
-        const resolved = resolveQualifier(ref, aliasMapFor(statement))
-        if (resolved) connected.add(resolved.name)
-      }
-    }
-    const lonely = statement.tables.filter((entry) => entry.alias !== statement.tables[0]?.alias && !connected.has(entry.name))
-    if (lonely.length > 0) {
-      pushFinding(findings, {
-        code: 'cartesian',
-        severity: 'high',
-        line: statement.startLine,
-        params: { tables: lonely.map((entry) => entry.rawName) },
-      })
-    }
-    // 外连接被 WHERE 条件退化成内连接
     for (const predicate of statement.predicates) {
       if (predicate.kind === 'join' || predicate.clause === 'having') continue
       const ref = predicate.columns[0]
@@ -2045,7 +2128,6 @@ function analyzeStatement(statement, options) {
         })
       }
     }
-    void joinedAliases
   }
   if (statement.unions.some((union) => union.kind === 'UNION')) {
     pushFinding(findings, { code: 'unionDistinct', severity: 'info', line: statement.startLine, params: {} })
