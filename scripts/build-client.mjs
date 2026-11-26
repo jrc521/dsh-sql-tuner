@@ -1,8 +1,9 @@
 /**
- * 把 engine.js（纯 ESM）+ src/client-src.js 合成一个浏览器可加载的 client.js。
+ * 把 engine.js（纯 ESM）+ src/docx-core.js + src/client-src.js 合成一个
+ * 浏览器可加载的 client.js。
  * 输出格式：window.__ModuleLoader__.load({ id, factory(require) {...} })
  *   - 不做压缩，源码可读，便于排查
- *   - engine.js 里的 `export` 关键字会被去掉，函数直接落在 factory 作用域里
+ *   - 各模块里的 `export` 关键字会被去掉，函数直接落在 factory 作用域里
  */
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -13,13 +14,19 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = dirname(here)
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 
-const engine = readFileSync(join(root, 'engine.js'), 'utf8')
-  .replace(/^export\s+(?=(async\s+)?function\b|const\b|class\b|let\b)/gm, '')
+function stripExports(text) {
+  return text.replace(/^export\s+(?=(async\s+)?function\b|const\b|class\b|let\b)/gm, '')
+}
 
+const engine = stripExports(readFileSync(join(root, 'engine.js'), 'utf8'))
+const docx = stripExports(readFileSync(join(root, 'src', 'docx-core.js'), 'utf8'))
 const ui = readFileSync(join(root, 'src', 'client-src.js'), 'utf8')
 
 if (!/^return \{ inject:/m.test(ui)) {
   throw new Error('src/client-src.js 必须以 `return { inject: [...], apply }` 结尾')
+}
+if (!/buildDocx/.test(docx)) {
+  throw new Error('src/docx-core.js 里没有找到 buildDocx')
 }
 
 function indent(text) {
@@ -40,6 +47,8 @@ window.__ModuleLoader__.load({
 
 ${indent(engine)}
 
+${indent(docx)}
+
 ${indent(ui)}
   },
 });
@@ -47,4 +56,8 @@ ${indent(ui)}
 
 writeFileSync(join(root, 'client.js'), output, 'utf8')
 const kb = (Buffer.byteLength(output, 'utf8') / 1024).toFixed(1)
-console.log(`client.js 已生成：${kb} KB（engine ${(Buffer.byteLength(engine, 'utf8') / 1024).toFixed(1)} KB + ui ${(Buffer.byteLength(ui, 'utf8') / 1024).toFixed(1)} KB）`)
+console.log(
+  `client.js 已生成：${kb} KB（engine ${(Buffer.byteLength(engine, 'utf8') / 1024).toFixed(1)} KB`
+  + ` + docx ${(Buffer.byteLength(docx, 'utf8') / 1024).toFixed(1)} KB`
+  + ` + ui ${(Buffer.byteLength(ui, 'utf8') / 1024).toFixed(1)} KB）`,
+)

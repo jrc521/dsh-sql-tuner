@@ -63,6 +63,9 @@ const DICT = {
 
     'f.dropExport': '发给 AI 深入分析',
     'f.copyReport': '复制报告',
+    'f.exportReport': '导出报告',
+    'f.reportExported': '报告已导出为 Word 文档',
+    'f.exportFailed': '导出失败，请重试',
     'f.reportCopied': '报告已复制',
     'f.sentToChat': '提示词已复制，已切到对话面板，粘贴回车即可让 AI 深入分析',
     'f.needSql': '先写一条 SQL 再分析',
@@ -328,6 +331,9 @@ const DICT = {
 
     'f.dropExport': 'Send to agent',
     'f.copyReport': 'Copy report',
+    'f.exportReport': 'Export report',
+    'f.reportExported': 'Report exported as a Word document',
+    'f.exportFailed': 'Export failed, please retry',
     'f.reportCopied': 'Report copied',
     'f.sentToChat': 'Prompt copied and chat opened 閳?paste and send for a deeper review',
     'f.needSql': 'Write a SQL statement first',
@@ -689,8 +695,8 @@ const CSS = `
 .sqlt-btn-ghost:hover { color:var(--dsw-alias-label-primary); background:var(--dsw-alias-bg-layer-2); }
 .sqlt-select { height:26px; border-radius:7px; border:1px solid var(--dsw-alias-border-l1);
   background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); font-size:12px; padding:0 6px; }
-.sqlt-list { overflow:auto; min-height:0; padding:8px; display:flex; flex-direction:column; gap:8px; }
-.sqlt-table { border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-2); }
+.sqlt-list { overflow:auto; min-height:0; padding:8px; display:flex; flex-direction:column; gap:8px; align-items:stretch; }
+.sqlt-table { flex:0 0 auto; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-2); }
 .sqlt-table-h { display:flex; align-items:center; gap:6px; padding:6px 8px; }
 .sqlt-table-n { font-family:${MONO}; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sqlt-rows { display:flex; align-items:center; gap:4px; margin-left:auto; font-size:11px; color:var(--dsw-alias-label-secondary); }
@@ -726,7 +732,7 @@ const CSS = `
   color:var(--dsw-alias-label-secondary); }
 .sqlt-empty { margin:auto; max-width:420px; text-align:center; color:var(--dsw-alias-label-secondary); font-size:12.5px; padding:24px; }
 .sqlt-empty b { display:block; color:var(--dsw-alias-label-primary); font-size:13px; margin-bottom:6px; }
-.sqlt-sec { border:1px solid var(--dsw-alias-border-l1); border-radius:9px; background:var(--dsw-alias-bg-layer-2); overflow:hidden; }
+.sqlt-sec { flex:0 0 auto; border:1px solid var(--dsw-alias-border-l1); border-radius:9px; background:var(--dsw-alias-bg-layer-2); overflow:hidden; }
 .sqlt-sec-h { display:flex; align-items:center; gap:8px; padding:7px 10px; font-size:12px; font-weight:600;
   border-bottom:1px solid var(--dsw-alias-border-l1); }
 .sqlt-sec-b { padding:8px 10px; display:flex; flex-direction:column; gap:8px; }
@@ -738,7 +744,7 @@ const CSS = `
   border:1px solid var(--dsw-alias-border-l1); color:var(--dsw-alias-label-secondary); }
 .sqlt-flag-ok { color:var(--dsw-alias-state-success-primary); border-color:var(--dsw-alias-state-success-primary); }
 .sqlt-flag-bad { color:var(--dsw-alias-state-warn-primary); border-color:var(--dsw-alias-state-warn-primary); }
-.sqlt-finding { border:1px solid var(--dsw-alias-border-l1); border-radius:9px; overflow:hidden;
+.sqlt-finding { flex:0 0 auto; border:1px solid var(--dsw-alias-border-l1); border-radius:9px; overflow:hidden;
   background:var(--dsw-alias-bg-layer-2); }
 .sqlt-finding-h { display:flex; align-items:center; gap:7px; padding:7px 10px; font-size:12.5px; font-weight:600; }
 .sqlt-dot { width:7px; height:7px; border-radius:50%; flex:0 0 auto; }
@@ -756,7 +762,7 @@ const CSS = `
 .sqlt-why { line-height:1.55; }
 .sqlt-fix { color:var(--dsw-alias-label-primary); }
 .sqlt-fix::before { content:'→ '; color:var(--dsw-alias-state-success-primary); }
-.sqlt-code { position:relative; border-radius:8px; background:var(--dsw-alias-bg-base);
+.sqlt-code { flex:0 0 auto; position:relative; border-radius:8px; background:var(--dsw-alias-bg-base);
   border:1px solid var(--dsw-alias-border-l1); }
 .sqlt-code pre { margin:0; padding:8px 10px; font-family:${MONO}; font-size:11.5px; line-height:1.6;
   white-space:pre-wrap; word-break:break-word; overflow:auto; max-height:220px; }
@@ -1006,6 +1012,32 @@ function SqlTunerApp(props) {
 
   const reportMarkdown = () => buildMarkdown(t, language, { dialect, sql, schemaText, report })
 
+  const exportReport = () => {
+    if (!report || !report.statements || report.statements.length === 0) {
+      flash(t('f.needSql'))
+      return
+    }
+    try {
+      const blocks = buildReportBlocks(t, language, { dialect, sql, schemaText, report })
+      const bytes = buildDocx(blocks)
+      const blob = new window.Blob([bytes], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'sql-tuning-report-' + stampFileName() + '.docx'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.setTimeout(() => window.URL.revokeObjectURL(url), 4000)
+      flash(t('f.reportExported'))
+    } catch (error) {
+      void error
+      flash(t('f.exportFailed'))
+    }
+  }
+
   const summary = (report && report.summary) || {}
   const findings = (report && report.findings) || []
 
@@ -1126,8 +1158,8 @@ function SqlTunerApp(props) {
         report && report.statements ? h('span', null, lastRun ? t('result.analyzedAtTime', { n: report.statements.length, time: lastRun }) : t('result.analyzedAt', { n: report.statements.length })) : null,
         h('button', {
           className: 'sqlt-btn', type: 'button',
-          onClick: () => copyText(reportMarkdown(), t('f.reportCopied')),
-        }, t('f.copyReport')),
+          onClick: exportReport,
+        }, t('f.exportReport')),
         h('button', {
           className: 'sqlt-btn', type: 'button',
           onClick: () => {
@@ -1593,6 +1625,132 @@ function buildMarkdown(t, language, ctxData) {
   ))
   return lines.join('\n')
 }
+function stampFileName() {
+  try {
+    const now = new Date()
+    const pad = (value) => String(value).padStart(2, '0')
+    return now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '-' + pad(now.getHours()) + pad(now.getMinutes())
+  } catch (error) {
+    void error
+    return 'report'
+  }
+}
+
+/** Word 导出用的结构化内容（与 buildMarkdown 同源，但按文档层级组织）。 */
+function buildReportBlocks(t, language, ctxData) {
+  const { dialect, sql, schemaText, report } = ctxData
+  const L = (zh, en) => (language === 'en' ? en : zh)
+  const blocks = []
+  blocks.push({ kind: 'title', text: L('SQL 分析与调优报告', 'SQL analysis and tuning report') })
+  if (!report || !report.statements || report.statements.length === 0) {
+    blocks.push({ kind: 'p', text: L('（没有可分析的语句）', '(no statement parsed)') })
+    return blocks
+  }
+  blocks.push({ kind: 'p', text: L('数据库类型：', 'Database: ') + dialect })
+  blocks.push({ kind: 'p', text: L('生成时间：', 'Generated: ') + new Date().toLocaleString() })
+  const summary = report.summary || {}
+  blocks.push({
+    kind: 'p',
+    text: L(
+      `共分析 ${summary.statements} 条语句，发现 ${summary.high} 项高危、${summary.warn} 项建议、${summary.info} 项提示，给出 ${summary.indexes} 条索引建议。`,
+      `Analyzed ${summary.statements} statements: ${summary.high} high, ${summary.warn} advice, ${summary.info} notes, and ${summary.indexes} index suggestions.`,
+    ),
+  })
+
+  blocks.push({ kind: 'h1', text: L('一、SQL 解释', '1. Explanation') })
+  for (const explanation of report.explanations || []) {
+    blocks.push({
+      kind: 'h2',
+      text: L(
+        `语句 ${explanation.index + 1}（${t('kind.' + explanation.kind)}，第 ${explanation.line} 行）`,
+        `Statement ${explanation.index + 1} (${t('kind.' + explanation.kind)}, line ${explanation.line})`,
+      ),
+    })
+    blocks.push({ kind: 'p', text: L('逻辑执行顺序：', 'Logical order: ') + (explanation.logicalOrder || []).join(' → ') })
+    for (const step of explanation.steps || []) {
+      const rendered = renderStep(t, language, step)
+      if (!rendered) continue
+      const value = typeof rendered.value === 'string' ? rendered.value : flattenNode(rendered.value)
+      if (value === '') continue
+      blocks.push({ kind: 'bullet', text: rendered.label + '：' + value })
+    }
+    const access = explanation.access || []
+    if (access.length > 0) {
+      blocks.push({ kind: 'p', text: L('预计访问方式：', 'Estimated access:') })
+      for (const item of access) {
+        blocks.push({
+          kind: 'bullet',
+          text: item.table
+            + ' — ' + L('行数 ', 'rows ') + formatRows(item.rows, language)
+            + L('，粗估扫描 ', ', est. scan ') + (item.estimate === null ? '-' : formatRows(item.estimate, language))
+            + L('，索引 ', ', index ') + (item.index || L('无', 'none')),
+        })
+      }
+    }
+  }
+
+  blocks.push({ kind: 'h1', text: L('二、优化建议', '2. Advice') })
+  const findings = report.findings || []
+  if (findings.length === 0) {
+    blocks.push({ kind: 'p', text: L('这条 SQL 没有命中规则，也没有明显风险。仍建议用 EXPLAIN 复核一次。', 'No rule matched and no obvious risk. Still worth confirming with EXPLAIN.') })
+  }
+  for (const finding of findings) {
+    blocks.push({
+      kind: 'h2',
+      text: `【${t('sev.' + finding.severity)}】${t('f.' + finding.code + '.title')}`
+        + (finding.line ? L('（第 ' + finding.line + ' 行）', ' (line ' + finding.line + ')') : ''),
+    })
+    const detail = findingDetail(t, language, finding)
+    if (detail) blocks.push({ kind: 'p', text: L('现象：', 'Symptom: ') + detail })
+    const why = t('f.' + finding.code + '.why')
+    if (!/\.why$/.test(why)) blocks.push({ kind: 'p', text: L('原因：', 'Cause: ') + why })
+    const fix = t('f.' + finding.code + '.fix')
+    if (!/\.fix$/.test(fix)) blocks.push({ kind: 'p', text: L('建议：', 'Fix: ') + fix })
+  }
+
+  blocks.push({ kind: 'h1', text: L('三、执行优化', '3. Execution tuning') })
+  const suggestions = report.indexSuggestions || []
+  blocks.push({ kind: 'h2', text: L('索引建议', 'Index suggestions') })
+  if (suggestions.length === 0) blocks.push({ kind: 'p', text: L('现有索引已够用。', 'Existing indexes are enough.') })
+  for (const suggestion of suggestions) {
+    blocks.push({
+      kind: 'p',
+      text: suggestion.table + ' (' + suggestion.columns.join(', ') + ')'
+        + (suggestion.replaces ? L('，可替代现有索引 ', ', replaces ') + suggestion.replaces : ''),
+    })
+    blocks.push({ kind: 'code', text: suggestion.ddl })
+  }
+  blocks.push({ kind: 'h2', text: L('SQL 改写', 'SQL rewrites') })
+  const rewrites = report.rewrites || []
+  if (rewrites.length === 0) blocks.push({ kind: 'p', text: L('没有可以安全自动改写的部分。', 'Nothing to rewrite automatically.') })
+  for (const rewrite of rewrites) {
+    blocks.push({ kind: 'p', text: t(rewrite.code) + '：' + t(rewrite.note) })
+    blocks.push({ kind: 'code', text: '-- before\n' + rewrite.before + '\n-- after\n' + rewrite.after })
+  }
+  const execution = report.execution || []
+  const checklist = execution.reduce((all, item) => all.concat(item.checklist || []), [])
+  if (checklist.length > 0) {
+    blocks.push({ kind: 'h2', text: L('执行计划检查清单', 'Execution plan checklist') })
+    for (const item of checklist) blocks.push({ kind: 'bullet', text: t(item) })
+  }
+  const settings = execution.reduce((all, item) => all.concat(item.settings || []), [])
+  if (settings.length > 0) {
+    blocks.push({ kind: 'h2', text: L('会话 / 优化器参数', 'Session / optimizer settings') })
+    for (const item of settings) blocks.push({ kind: 'code', text: item.text })
+  }
+  const hints = execution.reduce((all, item) => all.concat(item.hints || []), [])
+  if (hints.length > 0) {
+    blocks.push({ kind: 'h2', text: L('可用 Hint', 'Hints') })
+    for (const item of hints) blocks.push({ kind: 'code', text: item.text })
+  }
+
+  blocks.push({ kind: 'h1', text: L('附录：表结构 / 数据字典', 'Appendix: schema / data dictionary') })
+  blocks.push({ kind: 'code', text: schemaText.trim() === '' ? L('（未提供）', '(not provided)') : schemaText.trim() })
+  blocks.push({ kind: 'h1', text: L('附录：原始 SQL', 'Appendix: original SQL') })
+  blocks.push({ kind: 'code', text: sql.trim() })
+  return blocks
+}
+
 function flattenNode(node) {
   if (node === null || node === undefined) return ''
   if (typeof node === 'string' || typeof node === 'number') return String(node)

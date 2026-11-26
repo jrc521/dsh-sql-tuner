@@ -121,6 +121,8 @@ function renderApp(Component, props) {
 // ---------------------------------------------------------------- DOM / 窗口桩
 
 const styleNodes = []
+/** 被「导出报告」触发的下载 */
+const downloads = []
 const documentStub = {
   documentElement: { lang: 'zh-CN' },
   head: {
@@ -136,6 +138,16 @@ const documentStub = {
       return node
     },
   },
+  body: {
+    appendChild(node) {
+      node.parentNode = documentStub.body
+      return node
+    },
+    removeChild(node) {
+      node.parentNode = null
+      return node
+    },
+  },
   createElement(tag) {
     return {
       tagName: tag,
@@ -143,6 +155,9 @@ const documentStub = {
       attributes: {},
       parentNode: null,
       setAttribute(name, value) { this.attributes[name] = value },
+      click() {
+        if (this.download) downloads.push({ name: this.download, href: this.href })
+      },
     }
   },
 }
@@ -164,6 +179,16 @@ const windowStub = {
   __ModuleLoader__: { load(definition) { windowStub.__loaded = definition } },
 }
 windowStub.window = windowStub
+/** 导出报告会用到 Blob / URL.createObjectURL */
+const blobs = []
+windowStub.Blob = Blob
+windowStub.URL = {
+  createObjectURL(blob) {
+    blobs.push(blob)
+    return 'blob:sqlt-' + blobs.length
+  },
+  revokeObjectURL() {},
+}
 
 const clipboard = []
 const sandbox = {
@@ -311,17 +336,18 @@ check('出现行号标记', zhTexts.some((text) => /^L\d+$/.test(text)), zhTexts
 check('左侧解析出表', zhTexts.some((text) => text.includes('已识别 1 张表')), zhTexts.filter((t) => t.includes('已识别')).slice(0, 3))
 
 const zhButtons = findButtons(zh.tree, [])
-const copyButton = zhButtons.find((button) => collectText(button, []).join('') === '复制报告')
-check('找到复制报告按钮', Boolean(copyButton), zhButtons.map((b) => collectText(b, []).join('')))
-if (copyButton) {
-  clipboard.length = 0
-  copyButton.props.onClick()
-  check('复制内容包含报告标题', clipboard.length === 1 && clipboard[0].includes('# SQL 分析与调优报告'), clipboard[0] && clipboard[0].slice(0, 60))
-  check('报告包含待分析 SQL', clipboard.length === 1 && clipboard[0].includes('DATE(create_time)'.replace('create_time', 'o.create_time')), clipboard[0] && clipboard[0].slice(0, 300))
-  check('报告包含优化建议段', clipboard.length === 1 && clipboard[0].includes('## 二、优化建议'), true)
-  check('报告包含执行优化段', clipboard.length === 1 && clipboard[0].includes('## 三、执行优化'), true)
-  const markdown = clipboard[0] || ''
-  check('报告里没有未替换的占位符', !/\{[a-zA-Z]+\}/.test(markdown), (/\{[a-zA-Z]+\}/.exec(markdown) || [])[0])
+const exportButton = zhButtons.find((button) => collectText(button, []).join('') === '导出报告')
+check('找到「导出报告」按钮', Boolean(exportButton), zhButtons.map((b) => collectText(b, []).join('')))
+if (exportButton) {
+  downloads.length = 0
+  blobs.length = 0
+  exportButton.props.onClick()
+  check('触发一次下载', downloads.length === 1, downloads)
+  check('文件名是 .docx', Boolean(downloads[0]) && /\.docx$/.test(downloads[0].name), downloads[0] && downloads[0].name)
+  check('文件名带时间戳', Boolean(downloads[0]) && /sql-tuning-report-\d{8}-\d{4}\.docx/.test(downloads[0].name), downloads[0] && downloads[0].name)
+  check('生成了一份 docx Blob', blobs.length === 1 && blobs[0].size > 2000, blobs.map((b) => b.size))
+  check('Blob 的 MIME 是 wordprocessingml', blobs[0] && blobs[0].type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', blobs[0] && blobs[0].type)
+  check('「复制报告」按钮已被替换掉', !zhButtons.some((b) => collectText(b, []).join('') === '复制报告'), true)
 }
 
 const dropButton = zhButtons.find((button) => collectText(button, []).join('') === '发给 AI 深入分析')

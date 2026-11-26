@@ -1,6 +1,6 @@
 {
   "name": "dsh-sql-tuner",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "SQL analysis and tuning panel for DeepSeek Harness. Explains a query against your own schema, ranks optimization advice, and prints index DDL, SQL rewrites and an execution plan checklist.",
   "type": "module",
   "license": "MIT",
@@ -50,7 +50,7 @@
   "scripts": {
     "build": "node scripts/build-client.mjs",
     "make-icon": "node scripts/make-icon.mjs",
-    "test": "node test/engine.test.mjs && node test/client.smoke.mjs && node scripts/check-dict.mjs"
+    "test": "node test/engine.test.mjs && node test/docx.test.mjs && node test/client.smoke.mjs && node scripts/check-dict.mjs"
   },
   "dsh": {
     "bundle": {
