@@ -3,10 +3,12 @@
  * 验证注册、渲染、自动分析、按钮回调与报告生成，不依赖浏览器。
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = dirname(here)
@@ -348,6 +350,45 @@ if (exportButton) {
   check('生成了一份 docx Blob', blobs.length === 1 && blobs[0].size > 2000, blobs.map((b) => b.size))
   check('Blob 的 MIME 是 wordprocessingml', blobs[0] && blobs[0].type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', blobs[0] && blobs[0].type)
   check('「复制报告」按钮已被替换掉', !zhButtons.some((b) => collectText(b, []).join('') === '复制报告'), true)
+
+  // 把导出的字节真的落盘，用 python-docx 打开：验证「面板导出 → Word 可读」整条链路
+  if (blobs[0]) {
+    const bytes = new Uint8Array(await blobs[0].arrayBuffer())
+    check('docx 以 PK\\x03\\x04 开头', bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 3 && bytes[3] === 4, [bytes[0], bytes[1], bytes[2], bytes[3]])
+
+    const dir = mkdtempSync(join(tmpdir(), 'sqlt-ui-docx-'))
+    const docxPath = join(dir, 'ui-report.docx')
+    const pyPath = join(dir, 'verify.py')
+    writeFileSync(docxPath, bytes)
+
+    const pySource = [
+      'import json, sys, io',
+      'sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")',
+      'from docx import Document',
+      'doc = Document(sys.argv[1])',
+      'texts = [p.text for p in doc.paragraphs]',
+      'print(json.dumps({"n": len(texts), "text": "\\n".join(texts)}, ensure_ascii=False))',
+    ].join('\n')
+    writeFileSync(pyPath, pySource, 'utf8')
+
+    const python = process.env.PYTHON_BIN
+      || 'C:\\Users\\t-jiangricheng\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\python\\python.exe'
+
+    try {
+      const stdout = execFileSync(python, [pyPath, docxPath], {
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      })
+      const parsed = JSON.parse(stdout)
+      check('python-docx 能打开面板导出的文件', parsed.n > 10, parsed.n)
+      check('导出内容含「优化建议」章节', parsed.text.includes('优化建议'), parsed.text.slice(0, 80))
+      check('导出内容含「索引建议」章节', parsed.text.includes('索引建议'), parsed.text.slice(0, 80))
+      check('导出内容含原始 SQL 附录', parsed.text.includes('DATE(o.create_time)'), parsed.text.slice(-160))
+    } catch (error) {
+      check('python-docx 能打开面板导出的文件', false, error instanceof Error ? error.message.slice(0, 300) : String(error))
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 const dropButton = zhButtons.find((button) => collectText(button, []).join('') === '发给 AI 深入分析')
